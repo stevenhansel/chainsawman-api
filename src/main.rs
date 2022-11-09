@@ -15,6 +15,29 @@ struct Devil {
     pub category: String,
 }
 
+#[derive(Debug)]
+struct DevilDetail {
+    pub names: HashMap<&'static str, DevilName>,
+    pub image_src: Option<String>,
+    pub gender: Option<String>,
+    pub birthplace: Option<String>,
+    pub age: Option<i32>,
+    pub status: Option<String>,
+    pub occupations: Vec<String>,
+    pub affiliations: Vec<String>,
+    pub contracts: Vec<String>,
+}
+
+/**
+* Names will be stored as a hashmap, where the key is the language code
+* */
+#[derive(Debug)]
+struct DevilName {
+    pub devil_name: String,
+    pub alias_name: Option<String>,
+}
+
+// TODO: Improve error handling to not rely on std::io::Error
 async fn scrape_devils() -> Result<Vec<Devil>, Error> {
     // key: Category, value: selector for the devil category div
     let map = HashMap::<&'static str, &'static str>::from([
@@ -85,9 +108,137 @@ async fn scrape_devils() -> Result<Vec<Devil>, Error> {
     Ok(devils)
 }
 
+const SECTION_NAME: &'static str = "Name";
+const SECTION_BIOLOGICAL: &'static str = "Biological Information";
+const SECTION_PROFESSIONAL: &'static str = "Professional Information";
+
+async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
+    let response = match reqwest::get(url).await {
+        Ok(html) => html,
+        Err(e) => return Err(Error::new(ErrorKind::Other, e.to_string())),
+    };
+    let html = match response.text().await {
+        Ok(text) => text,
+        Err(e) => return Err(Error::new(ErrorKind::Other, e.to_string())),
+    };
+    let document = Html::parse_document(&html);
+
+    let mut names: HashMap<&'static str, DevilName> = HashMap::new();
+
+    let mut gender: Option<String> = None;
+    let mut birthplace: Option<String> = None;
+    let mut status: Option<String> = None;
+    let mut age: Option<i32> = None;
+
+    let mut occupations: Vec<String> = Vec::new();
+    let mut affiliations: Vec<String> = Vec::new();
+    let mut contracts: Vec<String> = Vec::new();
+
+    let section_selector =
+        Selector::parse(r#"section[class="pi-item pi-group pi-border-color"]"#).unwrap();
+    for el in document.select(&section_selector) {
+        let h2_selector = Selector::parse("h2").unwrap();
+
+        let h2 = match el.select(&h2_selector).next() {
+            Some(h2) => h2,
+            None => continue,
+        };
+
+        let section_name = h2.text().collect::<String>();
+        if section_name == SECTION_NAME {
+            {
+                let kanji_selector = Selector::parse(r#"div[data-source="kanji"] > div"#).unwrap();
+                let div = match el.select(&kanji_selector).next() {
+                    Some(div) => div,
+                    None => continue,
+                };
+
+                let kanji = div.text().collect::<Vec<_>>();
+
+                let devil_name = kanji[0].to_string();
+
+                // TODO: handle how to clean the kanjis in the top of the alias name (?)
+                let alias_name: Option<String> = None;
+                // if kanji.len() > 1 {
+                //     alias_name = Some(kanji[1..].join(""));
+                // }
+
+                names.insert(
+                    "kanji",
+                    DevilName {
+                        devil_name,
+                        alias_name,
+                    },
+                );
+            }
+            {
+                let mut romajis: Vec<String> = Vec::new();
+
+                let romaji_selector =
+                    Selector::parse(r#"div[data-source="romaji"] > div > div > i"#).unwrap();
+                for romaji in el.select(&romaji_selector) {
+                    romajis.push(romaji.text().collect::<String>());
+                }
+
+                let devil_name = romajis[0].to_string();
+                let alias_name: Option<String> = if romajis.len() > 1 {
+                    Some(romajis[1].to_string())
+                } else {
+                    None
+                };
+
+                names.insert(
+                    "romaji",
+                    DevilName {
+                        devil_name,
+                        alias_name,
+                    },
+                );
+            }
+        } else if section_name == SECTION_BIOLOGICAL {
+            let gender_selector = Selector::parse(r#"div[data-source="gender"] > div"#).unwrap();
+            let birthplace_selector =
+                Selector::parse(r#"div[data-source="birthplace"] > div"#).unwrap();
+            let status_selector =
+                Selector::parse(r#"div[data-source="status"] > div > div"#).unwrap();
+            // TODO: age_selector
+
+            if let Some(div) = el.select(&gender_selector).next() {
+                gender = Some(div.text().collect::<String>());
+            }
+            if let Some(div) = el.select(&birthplace_selector).next() {
+                birthplace = Some(div.text().collect::<String>());
+            }
+            if let Some(div) = el.select(&status_selector).next() {
+                status = Some(div.inner_html().trim().to_string());
+            }
+        } else if section_name == SECTION_PROFESSIONAL {
+        }
+    }
+
+    Ok(DevilDetail {
+        names,
+        image_src: None,
+        gender,
+        birthplace,
+        age,
+        status,
+        occupations,
+        affiliations,
+        contracts,
+    })
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    if let Err(e) = scrape_devils().await {
-        println!("{:?}", e);
+    // let _devils = match scrape_devils().await {
+    //     Ok(devils) => devils,
+    //     Err(e) => panic!("{}", e.to_string())
+    // };
+
+    if let Err(e) =
+        scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Angel_Devil".into()).await
+    {
+        panic!("{}", e.to_string());
     }
 }
