@@ -26,6 +26,7 @@ struct DevilDetail {
     pub occupations: Vec<String>,
     pub affiliations: Vec<String>,
     pub contracts: Vec<String>,
+    pub relatives: Vec<String>,
 }
 
 /**
@@ -133,6 +134,10 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     let mut occupations: Vec<String> = Vec::new();
     let mut affiliations: Vec<String> = Vec::new();
     let mut contracts: Vec<String> = Vec::new();
+    let mut relatives: Vec<String> = Vec::new();
+
+    // TODO: parse image
+    // TODO: parse devil abilities
 
     let section_selector =
         Selector::parse(r#"section[class="pi-item pi-group pi-border-color"]"#).unwrap();
@@ -213,8 +218,52 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
                 status = Some(div.inner_html().trim().to_string());
             }
         } else if section_name == SECTION_PROFESSIONAL {
+            let occupation_selector =
+                Selector::parse(r#"div[data-source="occupation"] > div"#).unwrap();
+            let affiliation_selector =
+                Selector::parse(r#"div[data-source="affiliation"] > div > ul li"#).unwrap();
+            let contract_selector =
+                Selector::parse(r#"div[data-source="contracted humans"] > div"#).unwrap();
+            let relative_selector =
+                Selector::parse(r#"div[data-source="relatives"] > div"#).unwrap();
+
+            // TODO: handle nested li elements
+//             if let Some(div) = el.select(&occupation_selector).next() {
+//                 let a_selector = Selector::parse(r#"a"#).unwrap();
+//                 let nested_li_selector = Selector::parse(r#"ul > li"#).unwrap();
+
+//                 let texts = div.text().collect::<Vec<_>>();
+//                 for t in texts {
+//                     occupations.push(t.trim().to_string());
+//                 }
+//             }
+
+            for li in el.select(&affiliation_selector) {
+                let texts = li.text().collect::<Vec<_>>();
+                for t in texts {
+                    affiliations.push(t.trim().to_string());
+                }
+            }
+
+            if let Some(div) = el.select(&contract_selector).next() {
+                let texts = div.text().collect::<Vec<_>>();
+                for t in texts {
+                    contracts.push(t.trim().to_string());
+                }
+            }
+            if let Some(div) = el.select(&relative_selector).next() {
+                let texts = div.text().collect::<Vec<_>>();
+                for t in texts {
+                    relatives.push(t.trim().to_string());
+                }
+            }
         }
     }
+
+    // println!("occupations: {:?}", occupations);
+    // println!("affiliations: {:?}", affiliations);
+    // println!("contracts: {:?}", contracts);
+    // println!("Relatives: {:?}", relatives);
 
     Ok(DevilDetail {
         names,
@@ -226,6 +275,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
         occupations,
         affiliations,
         contracts,
+        relatives,
     })
 }
 
@@ -236,8 +286,7 @@ async fn main() {
     //     Err(e) => panic!("{}", e.to_string())
     // };
 
-    if let Err(e) =
-        scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Angel_Devil".into()).await
+    if let Err(e) = scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Makima".into()).await
     {
         panic!("{}", e.to_string());
     }
