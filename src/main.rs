@@ -3,7 +3,9 @@ use std::{
     io::{Error, ErrorKind},
 };
 
-use scraper::{Html, Selector};
+use lazy_static::lazy_static;
+use regex::Regex;
+use scraper::{ElementRef, Html, Selector};
 
 const CHAINSAWMAN_WIKI_BASE_URL: &'static str = "https://chainsaw-man.fandom.com";
 
@@ -21,12 +23,12 @@ struct DevilDetail {
     pub image_src: Option<String>,
     pub gender: Option<String>,
     pub birthplace: Option<String>,
-    pub age: Option<i32>,
     pub status: Option<String>,
     pub occupations: Vec<String>,
     pub affiliations: Vec<String>,
     pub contracts: Vec<String>,
     pub relatives: Vec<String>,
+    pub abilities: HashMap<&'static str, Vec<Ability>>,
 }
 
 /**
@@ -36,6 +38,13 @@ struct DevilDetail {
 struct DevilName {
     pub devil_name: String,
     pub alias_name: Option<String>,
+}
+
+#[derive(Debug)]
+struct Ability {
+    pub name: String,
+    pub description: String,
+    pub abilities: Vec<Ability>,
 }
 
 // TODO: Improve error handling to not rely on std::io::Error
@@ -113,7 +122,83 @@ const SECTION_NAME: &'static str = "Name";
 const SECTION_BIOLOGICAL: &'static str = "Biological Information";
 const SECTION_PROFESSIONAL: &'static str = "Professional Information";
 
+fn scrape_abilities(document: &Html, selector: Selector) -> Vec<Ability> {
+    let mut abilities = Vec::new();
+
+    if let Some(el) = document.select(&selector).next() {
+        let parent: ElementRef = el.parent().and_then(ElementRef::wrap).unwrap();
+        for sibling in parent.next_siblings() {
+            if let Some(el) = sibling.value().as_element() {
+                if el.name() != "ul" && el.name() != "figure" {
+                    break;
+                }
+
+                let ul = match ElementRef::wrap(sibling) {
+                    Some(ul) => ul,
+                    None => continue,
+                };
+
+                let li_selector = Selector::parse(r#":scope > li"#).unwrap();
+                for li in ul.select(&li_selector) {
+                    get_abilities(li, &mut abilities);
+                }
+            }
+        }
+    }
+
+    abilities
+}
+
+fn get_abilities(element: ElementRef, abilities: &mut Vec<Ability>) {
+    lazy_static! {
+        static ref REF_CLEANER: Regex = Regex::new(r#"\[\d+\]/gm"#).unwrap();
+    }
+
+    let texts = element.text().collect::<String>();
+    let texts = texts
+        .split(":")
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>();
+
+    if texts.len() < 2 {
+        return;
+    }
+
+    let name = texts[0].trim().to_string();
+    let description = REF_CLEANER.replace_all(&texts[1].trim().to_string(), "").to_string(); 
+
+    let mut child_abilities: Vec<Ability> = Vec::new();
+    let child_selector = Selector::parse(r#"ul > li"#).unwrap();
+
+    for child in element.select(&child_selector) {
+        get_abilities(child, &mut child_abilities);
+    }
+
+    abilities.push(Ability {
+        name,
+        description,
+        abilities: child_abilities,
+    });
+}
+
+fn print_ability_tree(level: i32, ability: &Ability, with_description: bool) {
+    println!("level: {} - ability: {}", level, ability.name);
+    if with_description {
+        println!("description: {}", ability.description);
+    }
+
+    for a in &ability.abilities {
+        print_ability_tree(level + 1, &a, with_description);
+    }
+}
+
 async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
+    lazy_static! {
+        // <a> element
+        static ref TEXT_MATCHER_A: Regex = Regex::new(r#"<a[^>]*>(.*?)</a>"#).unwrap();
+    }
+
     let response = match reqwest::get(url).await {
         Ok(html) => html,
         Err(e) => return Err(Error::new(ErrorKind::Other, e.to_string())),
@@ -129,15 +214,30 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     let mut gender: Option<String> = None;
     let mut birthplace: Option<String> = None;
     let mut status: Option<String> = None;
-    let mut age: Option<i32> = None;
 
     let mut occupations: Vec<String> = Vec::new();
     let mut affiliations: Vec<String> = Vec::new();
     let mut contracts: Vec<String> = Vec::new();
     let mut relatives: Vec<String> = Vec::new();
 
+    let mut abilities: HashMap<&'static str, Vec<Ability>> = HashMap::new();
+
     // TODO: parse image
-    // TODO: parse devil abilities
+    let abilities_selector: HashMap<&'static str, &'static str> = HashMap::from([
+        ("physical", r#"span[id="Physical_Abilities"]"#),
+        ("physical_prowess", r#"span[id="Physical_Prowess"]"#),
+        ("devil", r#"span[id="Devil_Powers"]"#),
+        ("supernatural", r#"span[id="Supernatural_Abilities"]"#),
+    ]);
+    for (key, value) in abilities_selector {
+        let current_abilities = scrape_abilities(&document, Selector::parse(value).unwrap());
+        for ab in &current_abilities {
+            print_ability_tree(0, ab, true);
+        }
+        if current_abilities.len() > 0 {
+            abilities.insert(key, current_abilities);
+        }
+    }
 
     let section_selector =
         Selector::parse(r#"section[class="pi-item pi-group pi-border-color"]"#).unwrap();
@@ -206,7 +306,6 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
                 Selector::parse(r#"div[data-source="birthplace"] > div"#).unwrap();
             let status_selector =
                 Selector::parse(r#"div[data-source="status"] > div > div"#).unwrap();
-            // TODO: age_selector
 
             if let Some(div) = el.select(&gender_selector).next() {
                 gender = Some(div.text().collect::<String>());
@@ -221,28 +320,34 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
             let occupation_selector =
                 Selector::parse(r#"div[data-source="occupation"] > div"#).unwrap();
             let affiliation_selector =
-                Selector::parse(r#"div[data-source="affiliation"] > div > ul li"#).unwrap();
+                Selector::parse(r#"div[data-source="affiliation"] > div > ul > li"#).unwrap();
             let contract_selector =
                 Selector::parse(r#"div[data-source="contracted humans"] > div"#).unwrap();
             let relative_selector =
                 Selector::parse(r#"div[data-source="relatives"] > div"#).unwrap();
 
-            // TODO: handle nested li elements
-//             if let Some(div) = el.select(&occupation_selector).next() {
-//                 let a_selector = Selector::parse(r#"a"#).unwrap();
-//                 let nested_li_selector = Selector::parse(r#"ul > li"#).unwrap();
-
-//                 let texts = div.text().collect::<Vec<_>>();
-//                 for t in texts {
-//                     occupations.push(t.trim().to_string());
-//                 }
-//             }
+            if let Some(div) = el.select(&occupation_selector).next() {
+                let texts = div.text().collect::<Vec<_>>();
+                for t in texts {
+                    occupations.push(t.trim().to_string());
+                }
+            }
 
             for li in el.select(&affiliation_selector) {
-                let texts = li.text().collect::<Vec<_>>();
-                for t in texts {
-                    affiliations.push(t.trim().to_string());
+                let mut curr: Vec<String> = Vec::new();
+
+                let nested_li_selector = Selector::parse(r#"ul > li"#).unwrap();
+                for nested_li in li.select(&nested_li_selector) {
+                    let text = nested_li.text().collect::<String>();
+                    curr.push(text);
                 }
+
+                if curr.len() == 0 {
+                    let text = li.text().collect::<String>();
+                    curr.push(text);
+                }
+
+                affiliations.append(&mut curr);
             }
 
             if let Some(div) = el.select(&contract_selector).next() {
@@ -251,31 +356,40 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
                     contracts.push(t.trim().to_string());
                 }
             }
+
             if let Some(div) = el.select(&relative_selector).next() {
-                let texts = div.text().collect::<Vec<_>>();
-                for t in texts {
-                    relatives.push(t.trim().to_string());
+                let html = div.inner_html();
+                let texts = html.split("<br>").into_iter().collect::<Vec<&str>>();
+                for text in texts {
+                    let result: Option<String> = if TEXT_MATCHER_A.is_match(text) {
+                        if let Some(groups) = TEXT_MATCHER_A.captures(text) {
+                            Some(groups[1].to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(text.trim().to_string())
+                    };
+
+                    if let Some(result) = result {
+                        relatives.push(result);
+                    }
                 }
             }
         }
     }
-
-    // println!("occupations: {:?}", occupations);
-    // println!("affiliations: {:?}", affiliations);
-    // println!("contracts: {:?}", contracts);
-    // println!("Relatives: {:?}", relatives);
 
     Ok(DevilDetail {
         names,
         image_src: None,
         gender,
         birthplace,
-        age,
         status,
         occupations,
         affiliations,
         contracts,
         relatives,
+        abilities,
     })
 }
 
@@ -286,7 +400,8 @@ async fn main() {
     //     Err(e) => panic!("{}", e.to_string())
     // };
 
-    if let Err(e) = scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Makima".into()).await
+    if let Err(e) =
+        scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Makima".into()).await
     {
         panic!("{}", e.to_string());
     }
