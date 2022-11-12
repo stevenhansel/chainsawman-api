@@ -12,6 +12,7 @@ use tokio::{
     sync::{Mutex, Semaphore},
     task::JoinHandle,
 };
+use duplicate::duplicate_item;
 
 const CHAINSAWMAN_WIKI_BASE_URL: &'static str = "https://chainsaw-man.fandom.com";
 
@@ -56,12 +57,24 @@ struct Ability {
 // TODO: Improve error handling to not rely on std::io::Error
 async fn scrape_devils() -> Result<Vec<Devil>, Error> {
     // key: Category, value: selector for the devil category div
-    let map = HashMap::<&'static str, &'static str>::from([
-        ("Normal Devils", r#"div[id="gallery-0"]"#),
-        ("Primal Devils", r#"div[id="gallery-1"]"#),
-        ("Reincarnated Devils", r#"div[id="gallery-2"]"#),
-        ("Fiends", r#"div[id="gallery-4"]"#),
-        ("Hybrids", r#"div[id="gallery-5"]"#),
+    let map = HashMap::<&'static str, Selector>::from([
+        (
+            "Normal Devils",
+            Selector::parse(r#"div[id="gallery-0"]"#).unwrap(),
+        ),
+        (
+            "Primal Devils",
+            Selector::parse(r#"div[id="gallery-1"]"#).unwrap(),
+        ),
+        (
+            "Reincarnated Devils",
+            Selector::parse(r#"div[id="gallery-2"]"#).unwrap(),
+        ),
+        ("Fiends", Selector::parse(r#"div[id="gallery-4"]"#).unwrap()),
+        (
+            "Hybrids",
+            Selector::parse(r#"div[id="gallery-5"]"#).unwrap(),
+        ),
     ]);
 
     let mut devils: Vec<Devil> = Vec::new();
@@ -78,8 +91,7 @@ async fn scrape_devils() -> Result<Vec<Devil>, Error> {
     };
 
     let document = Html::parse_document(&html);
-    for (key, value) in map.into_iter() {
-        let root_selector = Selector::parse(value).unwrap();
+    for (category, root_selector) in map.into_iter() {
         let children_selector = Selector::parse(r#"div[class="wikia-gallery-item"]"#).unwrap();
 
         let root = document.select(&root_selector).next().unwrap();
@@ -116,7 +128,7 @@ async fn scrape_devils() -> Result<Vec<Devil>, Error> {
                 devil_name,
                 alias_name,
                 wiki_url,
-                category: key.into(),
+                category: category.to_string(),
             });
         }
     }
@@ -231,19 +243,28 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     let mut abilities: HashMap<String, Vec<Ability>> = HashMap::new();
 
     // TODO: parse image
-    let abilities_selector: HashMap<&'static str, &'static str> = HashMap::from([
-        ("physical", r#"span[id="Physical_Abilities"]"#),
-        ("physical_prowess", r#"span[id="Physical_Prowess"]"#),
-        ("devil", r#"span[id="Devil_Powers"]"#),
-        ("supernatural", r#"span[id="Supernatural_Abilities"]"#),
+    let abilities_selector: HashMap<&'static str, Selector> = HashMap::from([
+        (
+            "physical",
+            Selector::parse(r#"span[id="Physical_Abilities"]"#).unwrap(),
+        ),
+        (
+            "physical_prowess",
+            Selector::parse(r#"span[id="Physical_Prowess"]"#).unwrap(),
+        ),
+        (
+            "devil",
+            Selector::parse(r#"span[id="Devil_Powers"]"#).unwrap(),
+        ),
+        (
+            "supernatural",
+            Selector::parse(r#"span[id="Supernatural_Abilities"]"#).unwrap(),
+        ),
     ]);
-    for (key, value) in abilities_selector {
-        let current_abilities = scrape_abilities(&document, Selector::parse(value).unwrap());
-        for ab in &current_abilities {
-            print_ability_tree(0, ab, true);
-        }
+    for (ability_type, selector) in abilities_selector {
+        let current_abilities = scrape_abilities(&document, selector);
         if current_abilities.len() > 0 {
-            abilities.insert(key.to_string(), current_abilities);
+            abilities.insert(ability_type.to_string(), current_abilities);
         }
     }
 
@@ -447,4 +468,65 @@ async fn scrape() -> Vec<DevilDetail> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     scrape().await;
+
+//     let a = Arc::new(RepositoryA::new());
+//     let b = Arc::new(RepositoryB::new());
+//     let service = ServiceA::new(b);
 }
+
+// pub struct RepositoryA {}
+
+// #[duplicate_item(Interface; [Querier]; [Fetcher])]
+// impl Interface for RepositoryA {
+//     fn foo(&self) -> String {
+//         String::from("foo")
+//     }
+// }
+
+// impl RepositoryA {
+//     pub fn new() -> Self {
+//         RepositoryA {}
+//     }
+// }
+
+// pub struct RepositoryB {}
+
+// impl RepositoryB {
+//     pub fn new() -> Self {
+//         RepositoryB {}
+//     }
+// }
+
+// impl Querier for RepositoryB {
+//     fn foo(&self) -> String {
+//         String::from("asd")
+//     }
+// }
+
+// pub trait Querier: Send + Sync + 'static {
+//     fn foo(&self) -> String;
+// }
+
+// pub struct ServiceA {
+//     pub querier: Arc<dyn Querier>,
+// }
+
+// impl ServiceA {
+//     pub fn new(querier: Arc<dyn Querier>) -> Self {
+//         ServiceA { querier }
+//     }
+// }
+
+// pub trait Fetcher: Send + Sync + 'static {
+//     fn foo(&self) -> String;
+// }
+
+// pub struct ServiceB {
+//     pub fetcher: Arc<dyn Fetcher>,
+// }
+
+// impl ServiceB {
+//     pub fn new(fetcher: Arc<dyn Fetcher>) -> Self {
+//         ServiceB { fetcher }
+//     }
+// }
