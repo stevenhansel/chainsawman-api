@@ -1,15 +1,21 @@
 use std::{
     collections::HashMap,
     io::{Error, ErrorKind},
+    sync::Arc,
+    time::Duration,
 };
 
 use lazy_static::lazy_static;
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    task::JoinHandle,
+};
 
 const CHAINSAWMAN_WIKI_BASE_URL: &'static str = "https://chainsaw-man.fandom.com";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Devil {
     pub devil_name: String,
     pub alias_name: Option<String>,
@@ -17,9 +23,9 @@ struct Devil {
     pub category: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DevilDetail {
-    pub names: HashMap<&'static str, DevilName>,
+    pub names: HashMap<String, DevilName>,
     pub image_src: Option<String>,
     pub gender: Option<String>,
     pub birthplace: Option<String>,
@@ -28,19 +34,19 @@ struct DevilDetail {
     pub affiliations: Vec<String>,
     pub contracts: Vec<String>,
     pub relatives: Vec<String>,
-    pub abilities: HashMap<&'static str, Vec<Ability>>,
+    pub abilities: HashMap<String, Vec<Ability>>,
 }
 
 /**
 * Names will be stored as a hashmap, where the key is the language code
 * */
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DevilName {
     pub devil_name: String,
     pub alias_name: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Ability {
     pub name: String,
     pub description: String,
@@ -166,7 +172,9 @@ fn get_abilities(element: ElementRef, abilities: &mut Vec<Ability>) {
     }
 
     let name = texts[0].trim().to_string();
-    let description = REF_CLEANER.replace_all(&texts[1].trim().to_string(), "").to_string(); 
+    let description = REF_CLEANER
+        .replace_all(&texts[1].trim().to_string(), "")
+        .to_string();
 
     let mut child_abilities: Vec<Ability> = Vec::new();
     let child_selector = Selector::parse(r#"ul > li"#).unwrap();
@@ -209,7 +217,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     };
     let document = Html::parse_document(&html);
 
-    let mut names: HashMap<&'static str, DevilName> = HashMap::new();
+    let mut names: HashMap<String, DevilName> = HashMap::new();
 
     let mut gender: Option<String> = None;
     let mut birthplace: Option<String> = None;
@@ -220,7 +228,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     let mut contracts: Vec<String> = Vec::new();
     let mut relatives: Vec<String> = Vec::new();
 
-    let mut abilities: HashMap<&'static str, Vec<Ability>> = HashMap::new();
+    let mut abilities: HashMap<String, Vec<Ability>> = HashMap::new();
 
     // TODO: parse image
     let abilities_selector: HashMap<&'static str, &'static str> = HashMap::from([
@@ -235,7 +243,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
             print_ability_tree(0, ab, true);
         }
         if current_abilities.len() > 0 {
-            abilities.insert(key, current_abilities);
+            abilities.insert(key.to_string(), current_abilities);
         }
     }
 
@@ -269,7 +277,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
                 // }
 
                 names.insert(
-                    "kanji",
+                    "kanji".to_string(),
                     DevilName {
                         devil_name,
                         alias_name,
@@ -293,7 +301,7 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
                 };
 
                 names.insert(
-                    "romaji",
+                    "romaji".to_string(),
                     DevilName {
                         devil_name,
                         alias_name,
@@ -393,16 +401,50 @@ async fn scrape_devil_detail(url: String) -> Result<DevilDetail, Error> {
     })
 }
 
+const NUM_OF_SCRAPER_WORKERS: usize = 5;
+const TASK_FINISH_DELAY_MS: u64 = 3000;
+
+async fn scrape() -> Vec<DevilDetail> {
+    let devils = match scrape_devils().await {
+        Ok(devils) => devils,
+        Err(e) => panic!("{}", e.to_string()),
+    };
+
+    let result: Arc<Mutex<Vec<DevilDetail>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let semaphore = Arc::new(Semaphore::new(NUM_OF_SCRAPER_WORKERS));
+    let mut join_handles: Vec<JoinHandle<()>> = Vec::new();
+
+    for (i, devil) in devils.into_iter().enumerate() {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let result = result.clone();
+
+        join_handles.push(tokio::spawn(async move {
+            let detail = match scrape_devil_detail(devil.wiki_url.clone()).await {
+                Ok(detail) => detail,
+                Err(_) => return (),
+            };
+
+            println!("devil #{}: {:?}", i, detail);
+
+            let mut guard = result.lock().await;
+            guard.push(detail);
+            std::mem::drop(guard);
+
+            tokio::time::sleep(Duration::from_millis(TASK_FINISH_DELAY_MS)).await;
+            drop(permit);
+        }));
+    }
+
+    for handle in join_handles {
+        handle.await.unwrap();
+    }
+
+    let result = result.lock().await;
+    result.to_vec()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    // let _devils = match scrape_devils().await {
-    //     Ok(devils) => devils,
-    //     Err(e) => panic!("{}", e.to_string())
-    // };
-
-    if let Err(e) =
-        scrape_devil_detail("https://chainsaw-man.fandom.com/wiki/Makima".into()).await
-    {
-        panic!("{}", e.to_string());
-    }
+    scrape().await;
 }
