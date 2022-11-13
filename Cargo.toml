@@ -25,6 +25,7 @@ async-graphql-axum = "4.0.16"
 async-trait = "0.1.58"
 axum = "0.5.17"
 clap = { version = "4.0.23", features = ["derive"] }
+dotenvy = "0.15.6"
 duplicate = "0.4.1"
 lazy_static = "1.4.0"
 regex = "1.7.0"
